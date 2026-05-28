@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FWHT.Net/FWHT.Net.csproj" />
+  </Folder>
+</Solution>
