@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <Copyright>Copyright 2026 Infalligence Labs</Copyright>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+</Project>

@@ -11,4 +11,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="FWHT.Net.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>
