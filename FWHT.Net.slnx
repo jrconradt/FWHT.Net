@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FWHT.Net/FWHT.Net.csproj" />
+    <Project Path="src/FWHT.Net.Bench/FWHT.Net.Bench.csproj" />
   </Folder>
 </Solution>
