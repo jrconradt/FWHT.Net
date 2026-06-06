@@ -51,32 +51,48 @@ Prints `True` on supported hardware.
 
 ## Benchmark
 
-Measured by piping the kernel through [LinearPipe.Net](https://github.com/jrconradt/LinearPipe.Net) — 1 GiB source mmap'd from tmpfs, halves first-touched on each NUMA node, workers pinned to NUMA-local cores. The pipeline streams **64-byte chunks** (one Register = one `Vector512<ulong>` = one cache line) through a 199-byte native EVEX stub that implements the same nine stages. 1 GiB / 64 B = 16,777,216 chunks per Flow. Output verified via the involution `T(T(x)) == x` before timing. Wall time is bracketed by a 10-byte `rdtsc` stub called via function pointer (two reads per measurement; the stub is two unmanaged indirect calls around a 200-million-cycle Flow loop, ≈ 10⁻⁷ of the measurement).
+The `FWHT.Net.Bench` project pipes the kernel through [LinearPipe.Net](https://github.com/jrconradt/LinearPipe.Net), consumed as the NuGet package `LinearPipe.Net` (0.1.0). LinearPipe mmaps a tmpfs source, streams **64-byte chunks** (one Register = one `Vector512<ulong>` = one cache line) through a native transform, and writes each result with a non-temporal `vmovntdq` store across a NUMA-pinned worker pool.
+
+The transform is a **154-byte hand-encoded EVEX stub** implementing the same nine stages: six per-qword `vpsllq` (strides 1, 2, 4, 8, 16, 32) and three cross-qword `valignq` (strides 64, 128, 256), each folded back into the running register by a single `vpternlogq` (immediate `0x78` = `a ⊕ (b ∧ c)`) against the stage mask. The nine masks live in a 64-byte-aligned constant pool passed as the stub's third argument and read with compressed-displacement loads. The stub loads with `vmovdqu64` and writes its result to the output pointer; LinearPipe issues the non-temporal store.
+
+The bench cross-checks the stub against the managed `WalshHadamard.Transform` chunk-for-chunk and checks the involution `T(T(x)) == x` for both the managed kernel and the stub, then verifies the involution end-to-end through the pipeline (`src → sink → src`) before timing. Wall time is bracketed by `rdtsc`/`rdtscp` stubs (raw bytes loaded into an executable page, called via function pointer); the harness runs warmup Flows, then measured Flows each bracketed by two TSC reads, and reports min/median/max with the TSC calibrated against `Stopwatch`.
+
+The source is placed for NUMA locality: its two halves are first-touched by threads pinned to node0 and node1 so each half's pages land on that socket, and the LinearPipe workers are pinned via `PipelineOptions.AffinityCores` to distinct physical cores split node0/node1 — each worker reads its NUMA-local half and its non-temporal writes land node-local. The run below streams a 100 GiB source (100 GiB / 64 B = 1,677,721,600 chunks per Flow); the project's default test runs a quick 64 MiB pass.
 
 **Host:** Intel Xeon Gold 6230 (Cascade Lake, 2.10 GHz nominal, 2 sockets × 20 cores × 2 threads), TSC frequency 2.1 GHz, kernel 6.12.
 
 ```
-size=1024MB chunks=16777216  stub=199B  src halves placed node0/node1
-verify involution (src -> Mobius -> Mobius == src) ... PASS
+size=102400MB chunks=1677721600  stub=154B  src halves first-touched node0/node1
 
 workers   ms/Flow   GB/s_rd   GB/s_rw   ns/chunk_agg   ns/op/wkr
-    1    237.201       4.5       9.1       14.138      14.14
-    4     57.632      18.6      37.3        3.435      13.74
-   10     26.537      40.5      80.9        1.582      15.82
-   20     21.541      49.8      99.7        1.284      25.68
+    1   22371.869       4.8       9.6        13.335      13.33
+    4    5585.661      19.2      38.4         3.329      13.32
+   10    2561.737      41.9      83.8         1.527      15.27
+   20    2087.837      51.4     102.9         1.244      24.89
+   40    2039.816      52.6     105.3         1.216      48.63
 ```
 
 **Reading the numbers:**
 
-- **ns/op/wkr** is the per-64-byte-chunk latency seen by one worker: ~14 ns at low contention. This is the cost of `vmovdqu64` load (64 B) + 9 EVEX stages + `vmovntdq` store (64 B) on one core, dominated by the memory transactions; the 9 stages of compute slot into the cycles each core was already waiting on load/NT-store and add only ~1 ns over a pure identity transform.
-- **Linear scaling 1 → 4 workers**, per-op stays flat at ~13–14 ns. Each worker is independent.
-- **10-worker knee** is where per-socket memory controllers begin to saturate; per-op starts to creep.
-- **20-worker plateau** is full both-sockets saturation at ~100 GB/s of combined R+NT-W traffic — past this, more workers just queue on the same controllers. This is the bus.
+- **ns/op/wkr** is the per-64-byte-chunk latency seen by one worker: ~13.3 ns at low contention. This is the cost of the `vmovdqu64` load (64 B) + 9 EVEX stages on one core plus the pipeline's non-temporal store (64 B), dominated by the memory transactions; the nine stages of compute slot into the cycles each core was already waiting on load/NT-store and add only ~1 ns over a pure identity transform.
+- **Flat 1 → 4 workers**, per-op holds at ~13.3 ns. Each worker is independent.
+- **10-worker knee** at ~84 GB/s R+NT-W, where the per-socket memory controllers begin to fill.
+- **20 workers reach ~103 GB/s** combined R+NT-W — both sockets' controllers working in parallel, which only happens because the source halves and the workers are placed NUMA-local.
+- **40 workers add +2%** (~105 GB/s) for **2× the per-op latency** (48.6 ns). Past ~20 workers there is no bandwidth left to win; the extra workers just queue on the bus. This is the ceiling: ~105 GB/s is the combined two-socket DRAM bandwidth of the host.
+- **One worker pays a remote-half penalty** (~13.3 ns vs ~10 ns for a non-split layout): a single node0-pinned worker reads node1's half across the interconnect. The trade-off vanishes by 4 workers and is what unlocks the 2× ceiling above.
 
-The kernel is **memory-bound, not compute-bound**. The cost of nine register-resident stages is hidden in the streaming traffic at every meaningful concurrency level.
+The kernel is **memory-bound, not compute-bound**. The cost of nine register-resident stages is hidden in the streaming traffic at every meaningful concurrency level, and the only software lever left is moving less data — NUMA-local placement (above) is worth ~2.6× over a naive layout, where all traffic funnels through one socket's controllers and 20 workers regress below 10.
 
 ## Build
 
 ```
 dotnet build FWHT.Net.slnx
 ```
+
+Run the benchmark and verification (xUnit, requires AVX-512F):
+
+```
+dotnet test src/FWHT.Net.Bench/FWHT.Net.Bench.csproj -c Release
+```
+
+The default test streams a 64 MiB source. To reproduce the 100 GiB sweep above, raise `SIZE_BYTES` and extend `WorkerSweep` in `FwhtBenchmarkTests.cs`, and place the source and sink on separate tmpfs mounts so both fit in RAM.
