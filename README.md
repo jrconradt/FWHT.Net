@@ -1,5 +1,7 @@
 # FWHT.Net
 
+![.NET](https://img.shields.io/badge/.NET-10-512BD4) ![Arch](https://img.shields.io/badge/x86--64-AVX--512F-orange) [![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
+
 A nine-stage Möbius/Yates butterfly over GF(2) on a single `Vector512<ulong>`. One Register (512 bits = 2⁹ elements) in, one Register out — no loops, no memory between stages.
 
 `WalshHadamard.Transform(Vector512<ulong> w)` runs the kernel: six per-qword shift+mask+XOR stages (strides 1, 2, 4, 8, 16, 32), then three cross-qword `AlignRight64`+mask+XOR stages (strides 64, 128, 256). The transform is its own inverse over GF(2): applying it twice returns the original.
@@ -96,3 +98,11 @@ dotnet test src/FWHT.Net.Bench/FWHT.Net.Bench.csproj -c Release
 ```
 
 The default test streams a 64 MiB source. To reproduce the 100 GiB sweep above, raise `SIZE_BYTES` and extend `WorkerSweep` in `FwhtBenchmarkTests.cs`, and place the source and sink on separate tmpfs mounts so both fit in RAM.
+
+## Status
+
+Research artifact: a single kernel plus its benchmark harness. No published package, no CI; the API may change. AVX-512F is required — there is no fallback path.
+
+## License
+
+Apache-2.0. Copyright 2026 Infalligence Labs LLC — see [LICENSE](LICENSE).
